@@ -20,6 +20,7 @@ public class Browser {
 				chromeOptions());
 		chromeDriver.manage().window().setSize(new Dimension(1024, 768));
 		chromeDriver.manage().timeouts().implicitlyWait(0L, TimeUnit.SECONDS);
+		Runtime.getRuntime().addShutdownHook(new Thread(chromeDriver::quit));
 		return chromeDriver;
 	}
 
@@ -34,7 +35,17 @@ public class Browser {
 		chromeOptions.addArguments("--disable-infobars");
 		chromeOptions.addArguments("--disable-dev-shm-usage");
 		chromeOptions.addArguments("--disable-browser-side-navigation");
+		if (isHeadless()) {
+			chromeOptions.addArguments("--headless=new");
+			chromeOptions.addArguments("--window-size=1024,768");
+			chromeOptions.addArguments("--disable-gpu");
+		}
 		return chromeOptions;
+	}
+
+	/** Headless when started with -Dheadless=true or when running on CI (CI=true). */
+	private static boolean isHeadless() {
+		return Boolean.getBoolean("headless") || "true".equalsIgnoreCase(System.getenv("CI"));
 	}
 
 }
