@@ -1,0 +1,90 @@
+{
+  "_comment": "Project settings for the post-merge QA agent, filled in for Spring PetClinic (Java, Thymeleaf, Cucumber + Selenium). Everything project-specific lives here so the script itself stays generic.",
+
+  "project_name": "Spring PetClinic",
+  "app_port": 8080,
+  "keep_env": [],
+  "runner": {
+    "preset": "cucumber-java"
+  },
+  "project_description": "Spring Boot monolith with Thymeleaf pages: a veterinary clinic with owners, their pets and visits, and vets. Java packages: owner (owners, pets and visits: controllers, repositories, pages), vet, visit, model (shared base classes) and system (welcome page, errors, cache).",
+  "suite_description": "Cucumber scenarios (src/test/resources/scenarios/*.feature) run by Java and Selenium in Chrome against the running application on port 8080. The application has no login.",
+
+  "src_dir": "src",
+  "e2e_dir": "src/test/resources/scenarios",
+  "generated_dir": "src/test/resources/scenarios/generated",
+  "login_setup": "",
+  "no_login": true,
+  "default_owner": "owner",
+  "source_extensions": [".java", ".html", ".properties"],
+  "global_files": ["pom.xml", "src/main/resources/application.properties"],
+  "support_dirs": ["src/test/java"],
+  "generic_types": ["Program", "Extensions", "Constants", "PetClinicApplication", "BaseEntity", "NamedEntity", "Person"],
+
+  "components": {
+    "owner":  ["src/main/java/org/springframework/samples/petclinic/owner",
+               "src/main/resources/templates/owners",
+               "src/main/resources/templates/pets"],
+    "vet":    ["src/main/java/org/springframework/samples/petclinic/vet",
+               "src/main/resources/templates/vets"],
+    "visit":  ["src/main/java/org/springframework/samples/petclinic/visit"],
+    "model":  ["src/main/java/org/springframework/samples/petclinic/model"],
+    "system": ["src/main/java/org/springframework/samples/petclinic/system",
+               "src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java",
+               "src/main/resources/templates/fragments",
+               "src/main/resources/templates/welcome.html",
+               "src/main/resources/templates/error.html",
+               "src/main/resources/messages"]
+  },
+
+  "auth_specs": [],
+  "all_specs": [],
+  "default_specs": [],
+  "spec_map": {
+    "owner":  ["FindOwners", "AddOwners"],
+    "visit":  ["FindOwners"],
+    "vet":    [],
+    "model":  ["FindOwners", "AddOwners", "MainPage"],
+    "system": ["FindOwners", "AddOwners", "MainPage"]
+  },
+
+  "helper_files": [
+    "src/test/java/org/springframework/samples/petclinic/integration/StepDefinition.java",
+    "src/test/java/org/springframework/samples/petclinic/integration/GenericSteps.java"
+  ],
+
+  "ui_markup": {
+    "dirs": ["src/main/resources/templates"],
+    "extensions": [".html"],
+    "budget_chars": 40000
+  },
+
+  "test_data": [
+    {
+      "file": "src/main/resources/db/hsqldb/data.sql",
+      "format": "text",
+      "grep": "^INSERT INTO (owners|pets|vets|specialties|types|visits)",
+      "title": "Seeded clinic data (SQL inserts)",
+      "note": "the ONLY data that exists at start-up; owner names, cities, telephone numbers, pets and vets are exact",
+      "max_chars": 6000
+    }
+  ],
+
+  "prompts_dir": "qa-agent/prompts",
+  "pricing_file": "qa-agent/pricing.json",
+  "cost": {
+    "free_providers": ["github", "gemini"],
+    "reference_models": ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"],
+    "prs_per_month": 50
+  },
+
+  "prompt_vars": {
+    "example_step": "Fill the field named 'lastName' with 'Franklin' and submit the search form",
+    "example_test_id": "src/test/resources/scenarios/FindOwners.feature:3",
+    "example_page": "/owners/find",
+    "example_paths": "'/', '/owners/find', '/owners/new'",
+    "helpers_rules": "reuse ONLY the steps defined in StepDefinition.java and GenericSteps.java (shown in the framework section); copy their wording exactly.",
+    "auth_rules": "The application has no login and no stored session. The data is reset every time the application starts.",
+    "app_rules": "- Pages: /owners/find (heading 'Find Owners', form id 'search-owner-form', field 'lastName', link text 'Add Owner'), /owners/new (form id 'add-owner-form', fields 'firstName', 'lastName', 'address', 'city', 'telephone'), the owners list (heading 'Owners', table id 'owners'), owner details (heading 'Owner Information'), /vets.html (heading 'Veterinarians'). Take element names, labels and headings from the provided markup only."
+  }
+}

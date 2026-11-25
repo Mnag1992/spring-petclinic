@@ -1,0 +1,182 @@
+name: Post-Merge Autonomous QA Pipeline
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:            # re-run the pipeline manually from the Actions tab
+    inputs:
+      base:
+        description: 'Diff base (commit/ref). The pipeline analyses base..HEAD of main.'
+        required: false
+        default: 'HEAD~1'
+      dry_run:
+        description: 'Analysis only (impact analysis, no LLM calls, no test execution)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: post-merge-qa
+  cancel-in-progress: false
+
+jobs:
+  run-qa-agent:
+    # only merged PRs (closing a PR without merging also fires 'closed'), and never the PRs this
+    # agent opens itself (qa-agent/* branches) - that would create an endless feedback loop
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       !startsWith(github.event.pull_request.head.ref, 'qa-agent/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write        # commit generated tests back
+      pull-requests: write   # post the QA report on the merged PR
+      models: read           # GitHub Models (free LLM via GITHUB_TOKEN - no extra key needed)
+
+    steps:
+      - name: Checkout merged code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve PR diff range
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MANUAL_BASE: ${{ inputs.base || 'HEAD~1' }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            # exact PR changes regardless of merge strategy (merge / squash / rebase)
+            git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head"
+            echo "DIFF_BASE=$(git merge-base "$BASE_SHA" origin/pr-head)" >> "$GITHUB_ENV"
+            echo "DIFF_HEAD=origin/pr-head" >> "$GITHUB_ENV"
+          else
+            echo "DIFF_BASE=$(git rev-parse "$MANUAL_BASE")" >> "$GITHUB_ENV"
+            echo "DIFF_HEAD=HEAD" >> "$GITHUB_ENV"
+          fi
+
+      # the Cucumber runner starts the app itself (@SpringBootTest on port 8080) and drives headless Chrome
+      - name: Setup Java 17 + Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Make the Maven wrapper executable
+        run: chmod +x mvnw
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # no pip install needed - the agent uses only the Python standard library
+
+      - name: Execute Multi-Agent Engine & Targeted Tests
+        id: agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}           # primary: GitHub Models
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}       # fallback 1 (optional)
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} # fallback 2 (optional)
+          LLM_PROVIDERS: github,gemini,anthropic
+          QA_DRY_RUN: ${{ inputs.dry_run }}
+        run: python post_merge_qa_agent.py
+
+      - name: Upload QA report & test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: |
+            qa-report.md
+            qa-results/
+            qa-quarantine/
+            target/failsafe-reports/
+            target/cucumber-html-report/
+          if-no-files-found: ignore
+
+      - name: Comment QA report on the merged PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [ -f qa-report.md ] || exit 0
+          # PR comments are limited to 65536 characters
+          head -c 60000 qa-report.md > qa-comment.md
+          echo -e "\n\n[Full run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> qa-comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file qa-comment.md
+
+      # Only after a green agent run (a red run quarantines its new tests instead).
+      # Default: open a PR so a human reviews the generated tests before they join the suite.
+      # Set the repository variable QA_COMMIT_MODE=main to push straight to main instead.
+      # PR mode needs Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests".
+      - name: Publish new automation
+        if: always() && steps.agent.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_MODE: ${{ vars.QA_COMMIT_MODE || 'pr' }}
+          QA_GENERATED_DIR: src/test/resources/scenarios/generated   # must match "generated_dir" in qa-agent/qa-agent.config.json
+          SOURCE_PR: ${{ github.event.pull_request.number }}
+        run: |
+          git config --global user.name "AI-QA-Agent[bot]"
+          git config --global user.email "ai-qa-agent@users.noreply.github.com"
+          # generated tests + the prompt files the agent seeds on its first run (qa-agent/prompts)
+          [ -d "$QA_GENERATED_DIR" ] && git add "$QA_GENERATED_DIR"
+          [ -d qa-agent/prompts ] && git add qa-agent/prompts
+          if git diff --staged --quiet; then
+            echo "No new tests generated."
+            exit 0
+          fi
+          if [ "$COMMIT_MODE" = "main" ]; then
+            # [skip ci] keeps this commit from re-triggering pr-validation / playwright workflows
+            git commit -m "chore(qa): automate missing QA scenarios [skip ci]"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          else
+            BRANCH="qa-agent/tests-${GITHUB_RUN_ID}"
+            git checkout -b "$BRANCH"
+            git commit -m "chore(qa): automate missing QA scenarios"
+            git push origin "$BRANCH"
+            gh pr create --base main --head "$BRANCH" \
+              --title "QA agent: automate missing scenarios${SOURCE_PR:+ (from #$SOURCE_PR)}" \
+              --body "Tests generated and validated by the post-merge QA agent${SOURCE_PR:+ for #$SOURCE_PR}. Please review before merging. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              || echo "::warning::Could not open a PR automatically (enable 'Allow GitHub Actions to create and approve pull requests' in the repository settings). The tests are on branch $BRANCH."
+          fi
+
+      # A red run (an existing test failed) still produces a PR - as a DRAFT - so the QA team can decide.
+      # The agent holds those specs in qa-quarantine/ instead of src/test/resources/scenarios/generated/; this step opens them for review.
+      # The PR description is the "Needs your decision" text from the report. Never merge it automatically.
+      - name: Open draft PR for held-back automation
+        if: always() && hashFiles('qa-quarantine/*.feature') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QA_GENERATED_DIR: src/test/resources/scenarios/generated   # must match "generated_dir" in qa-agent/qa-agent.config.json
+          SOURCE_PR: ${{ github.event.pull_request.number }}
+        run: |
+          git config --global user.name "AI-QA-Agent[bot]"
+          git config --global user.email "ai-qa-agent@users.noreply.github.com"
+          BRANCH="qa-agent/held-${GITHUB_RUN_ID}"
+          git fetch --no-tags origin main
+          git checkout -b "$BRANCH" origin/main
+          mkdir -p "$QA_GENERATED_DIR"
+          cp qa-quarantine/*.feature "$QA_GENERATED_DIR"/
+          git add "$QA_GENERATED_DIR"
+          if git diff --staged --quiet; then
+            echo "Nothing to open."
+            exit 0
+          fi
+          git commit -m "chore(qa): held-back automation (run was red) - needs review"
+          git push origin "$BRANCH"
+          {
+            echo "**Draft - do not merge until the decision below is resolved.**"
+            echo
+            [ -s qa-results/decision.md ] && cat qa-results/decision.md
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > qa-draft-body.md
+          gh pr create --draft --base main --head "$BRANCH" \
+            --title "QA agent (needs review): held-back tests${SOURCE_PR:+ (from #$SOURCE_PR)}" \
+            --body-file qa-draft-body.md \
+            || echo "::warning::Could not open a PR automatically (enable 'Allow GitHub Actions to create and approve pull requests'). The tests are on branch $BRANCH."
