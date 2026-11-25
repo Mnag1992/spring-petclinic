@@ -1263,7 +1263,7 @@ def execute_spec(path):
                 walk(suite)
       except (OSError, ValueError):
         pass
-    ok = result.returncode == 0
+    ok = result.returncode == 0 and not failed  # some runners (e.g. Maven failsafe at integration-test) exit 0 on failed tests
     if RUNNER.get("skipped_is_failure") and RUNNER["exec_results"] == "junit":
         rows = parse_junit(junit)
         skipped = [r[1] for r in rows if r[2] == "SKIP"]
@@ -1507,7 +1507,8 @@ def run_e2e(selected, generated):
     rows = parse_junit(junit)
     if proc.returncode != 0 and not rows:
         rows = [("e2e", f"({RUNNER['label']} run)", "FAIL", "", f"{RUNNER['label']} exited with {proc.returncode}")]
-    return proc.returncode != 0, rows
+    # trust the results too: a runner can exit 0 although scenarios failed (Maven failsafe runs verify later)
+    return proc.returncode != 0 or any(r[2] == "FAIL" for r in rows), rows
 
 
 def quarantine_generated_tests(generated):
