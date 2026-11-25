@@ -283,6 +283,7 @@ GENERATED_DIR = CFG["generated_dir"] or f"{E2E_DIR}/generated"   # <generated_di
 LOGIN_SETUP = CFG["login_setup"]            # "" = the suite has no login setup project
 RESULTS_DIR = "qa-results"
 QUARANTINE_DIR = "qa-quarantine"
+FAILED_DRAFTS = {}  # spec path -> (last code, last error) for specs Agent 2 could not get passing
 REPORT_FILE = "qa-report.md"
 SOURCE_EXTS = tuple(CFG["source_extensions"])
 EXCLUDED_PROJECTS = set(CFG["excluded_projects"])
@@ -1153,7 +1154,7 @@ def agent_2_automate(analysis, static):
                     s["automated_in"] = path
         else:
             for s in group:
-                s["note"] = "automation attempt failed validation - needs manual automation"
+                s["note"] = "automation attempt failed validation - last draft saved in the draft PR for a QA engineer to finish"
     return generated
 
 
@@ -1421,9 +1422,18 @@ def write_with_self_healing(path, user_prompt, heal_context=None):
             ok, _, _ = execute_spec(path)
         if ok:
             print(f"✅ Agent 2: kept the passing tests, dropped {len(dropped)} failing: {', '.join(dropped)}")
+            try:  # the failing scenarios are not lost: save them as a draft for a QA engineer to finish
+                all_titles = [t for t in map(test_title, code.splitlines()) if t is not None]
+                failing_only = salvage_passing_tests(code, [t for t in all_titles if t not in dropped])
+                if failing_only:
+                    base, ext = os.path.splitext(path)
+                    FAILED_DRAFTS[base + ".failed" + ext] = (failing_only[0], (errors or "")[-1500:])
+            except Exception as e:  # never let the draft step break the run
+                print(f"ℹ️  could not save the failing scenarios as a draft: {e}")
             return True, dropped
-    print(f"❌ Agent 2: {path} still invalid - discarded.")
+    print(f"❌ Agent 2: {path} still invalid - kept as a draft for human review, not added to the suite.")
     if os.path.exists(path):
+        FAILED_DRAFTS[path] = (read(path), (errors or "")[-1500:])
         os.remove(path)
     return False, []
 
@@ -1669,8 +1679,8 @@ def write_report(analysis, static, inventory, selected, generated, results, fail
     if quarantined:
         lines += [
             "## 🛑 New automation held back",
-            "The targeted run failed, so the merged code may contain a regression (or the new test is wrong). "
-            "The new specs were **not committed**. Review them below and commit manually if they are correct.",
+            "These specs were **not committed** (the targeted run failed, or Agent 2 could not get them passing). "
+            "Review them below and commit manually if they are correct.",
             "",
         ]
         for path, code in quarantined.items():
@@ -1743,6 +1753,18 @@ def main():
         if only_new:
             print("ℹ️  Only the new tests failed; existing tests are green. New specs quarantined.")
             failed = False
+    if FAILED_DRAFTS:  # Agent 2 could not get these passing: hand them to a human instead of dropping them
+        os.makedirs(QUARANTINE_DIR, exist_ok=True)
+        notes = ["", "### Drafts that failed validation", "",
+                 "Agent 2 tried to write and heal these tests but they still failed against the running app. "
+                 "The last draft of each is in the **draft PR** for a QA engineer to finish or discard:", ""]
+        for p, (code, err) in FAILED_DRAFTS.items():
+            with open(os.path.join(QUARANTINE_DIR, os.path.basename(p)), "w", encoding="utf-8") as f:
+                f.write(code if code.endswith("\n") else code + "\n")
+            quarantined[p] = code
+            last = " ".join((err or "").split())[:300]
+            notes += [f"- `{os.path.basename(p)}` - last error: {last or 'see the run log'}"]
+        decision = ((decision or "## ⚠️ Needs your decision\n") + "\n".join(notes) + "\n")
     write_report(analysis, static, inventory, selected, generated, results, failed, llm_error, quarantined, decision)
     os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(DECISION_FILE, "w", encoding="utf-8") as f:   # used as the draft-PR description by the workflow
@@ -1754,4 +1776,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--init" in sys.argv:  # draft the setup for a new repository: python post_merge_qa_agent.py --init [--check] [--force]
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "qa-agent"))
+        import qa_init
+        sys.exit(qa_init.main([a for a in sys.argv[1:] if a != "--init"]))
     sys.exit(main())
