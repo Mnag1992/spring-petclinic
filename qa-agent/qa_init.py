@@ -133,11 +133,16 @@ def detect_source(root, files, tests_dir, F):
         ext = os.path.splitext(f)[1]
         if ext not in CODE_EXTS or (tests_dir and f.startswith(tests_dir + "/")) or "/test/" in f or "/tests/" in f:
             continue
+        if "/" not in f:  # a file in the repo root (a config file) is not a source folder
+            continue
         top = f.split("/")[0]
         counts[top] = counts.get(top, 0) + 1
         exts[ext] = exts.get(ext, 0) + 1
     if not counts:
-        return "src", [".py"], F.add(CHECK, "Source folder", "no application code found") or "other"
+        return "src", [".py"], F.add(CHECK, "Source folder", "no application code found", "src_dir",
+                                    "No application code was found in this repository (the tests may target a separately deployed site).",
+                                    "If the application code is in this repo, put its root folder in \"src_dir\" and its file types in \"source_extensions\". "
+                                    "If not, leave it: impact analysis then relies on the changed files you pass in.", "Developer") or "other"
     src = max(counts, key=counts.get)
     lang_votes = {}
     for e, n in exts.items():
@@ -166,6 +171,16 @@ def detect_port(root, files, preset, lang, F):
                 if m:
                     F.add(SURE, "App port", f"{m.group(1)} (from {f})")
                     return int(m.group(1))
+    # the tests themselves usually say where the app runs: http://localhost:8080
+    seen = {}
+    for f in files:
+        if re.search(r"(^|/)(test|tests|e2e|cypress)(/|$)", f) and f.endswith((".java", ".kt", ".cs", ".py", ".ts", ".js")):
+            for m in re.finditer(r"(?:localhost|127\.0\.0\.1):(\d{2,5})", read(root, f, 20000)):
+                seen.setdefault(int(m.group(1)), f)
+    if seen:
+        port = max(seen, key=lambda p: sum(1 for q in seen if q == p))
+        F.add(SURE, "App port", f"{port} (from the tests: {seen[port]})")
+        return port
     default = {"java": 8080, "node": 3000, "dotnet": 5000, "python": 8000}.get(lang, 8080)
     F.add(CHECK, "App port", f"{default} assumed - no port setting found, confirm it", "app_port",
           f"The port the application listens on was not found in any setting file; {default} is only a typical default.",
@@ -995,7 +1010,7 @@ def main(argv):
         tp = write_safe(os.path.join(root, "qa-agent", "SETUP-TODO.md"), todo_markdown(F, os.path.basename(root)), force, notes)
         print(f"         {os.path.relpath(tp, root)}  (the list above, with details)")
     todo = sum(1 for m, _, _ in F.rows if m == CHECK)
-    print(f"\n{todo} item(s) to check. Next: copy post_merge_qa_agent.py into the repo root, add the AI key as a repository "
+    print(f"\n{todo} item(s) marked {CHECK} ({len(F.todos)} need a manual edit - see qa-agent/SETUP-TODO.md). Next: copy post_merge_qa_agent.py into the repo root, add the AI key as a repository "
           "secret, then run the workflow with dry_run ticked and confirm the right tests are chosen.")
     return 0
 
