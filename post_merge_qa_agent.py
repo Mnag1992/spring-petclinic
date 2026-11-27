@@ -1276,7 +1276,32 @@ def execute_spec(path):
         if not rows:
             ok = False
             out += "\n\nNo scenario ran: check the Scenario lines and the file path."
+    # keep the REAL failure visible: drop agent/banner noise, then put each failed scenario's own message at the end
+    noise = re.compile(r"jacoco|reports\.cucumber\.io|Share your Cucumber Report|Activate publ|^[\s│┌└─┐┘]+$|^\s*\.\.\. \d+ more|^\s+at (org\.jacoco|java\.instrument|jdk\.internal)", re.I)
+    out = "\n".join(l for l in out.splitlines() if not noise.search(l))
+    if RUNNER["exec_results"] == "junit":
+        details = fail_details(junit)
+        if details:
+            return ok, out[-3500:] + "\n\nFAILED SCENARIOS (exact failure messages):\n" + details, failed
     return ok, out[-6000:], failed
+
+
+def fail_details(path):
+    """The failure text of every failed scenario in a JUnit XML file (what the test itself reported)."""
+    if not os.path.exists(path):
+        return ""
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        return ""
+    lines = []
+    for tc in root.iter("testcase"):
+        for tag in ("failure", "error"):
+            node = tc.find(tag)
+            if node is not None:
+                text = " ".join(((node.get("message") or "") + " " + (node.text or "")).split())
+                lines.append(f"- {tc.get('name')}: {text[:700]}")
+    return "\n".join(lines)
 
 
 def title_key(title):
