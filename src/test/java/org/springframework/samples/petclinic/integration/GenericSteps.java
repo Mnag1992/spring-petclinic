@@ -39,8 +39,11 @@ public class GenericSteps {
 
 	@When("^I click on the button with text \"([^\"]*)\"$")
 	public void clickOnButtonWithText(String text) {
+		// a "button" is a <button>, a submit input, or a link styled as a button (class
+		// "btn"), e.g. Add Owner / Edit Owner
 		click(By.xpath("//button[normalize-space(.)=" + literal(text) + "] | //input[@type='submit' and @value="
-				+ literal(text) + "]"));
+				+ literal(text) + "] | //a[contains(concat(' ', normalize-space(@class), ' '), ' btn ') and "
+				+ "normalize-space(.)=" + literal(text) + "]"));
 	}
 
 	@When("^I clear the field named \"([^\"]*)\"$")
