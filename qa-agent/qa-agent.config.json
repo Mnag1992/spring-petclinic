@@ -61,7 +61,7 @@
 
   "test_data": [
     {
-      "file": "src/main/resources/db/hsqldb/data.sql",
+      "file": "src/main/resources/db/h2/data.sql",
       "format": "text",
       "grep": "^INSERT INTO (owners|pets|vets|specialties|types|visits)",
       "title": "Seeded clinic data (SQL inserts)",
